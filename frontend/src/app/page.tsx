@@ -143,8 +143,9 @@ export default function Home() {
       setAudioDuration(await getDuration(file));
 
       setStatusMessage("Transcription complete!");
-    } catch (err: any) {
-      setError(err.message || "Error");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(msg);
       setStatusMessage("");
     } finally {
       setIsProcessing(false);
@@ -208,8 +209,9 @@ export default function Home() {
       a.remove();
       URL.revokeObjectURL(url);
       setStatusMessage("DOCX downloaded.");
-    } catch (e: any) {
-      setError(e.message || "Download failed");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(msg || "Download failed");
       setStatusMessage("");
     } finally {
       setIsProcessing(false);
