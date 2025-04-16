@@ -1,6 +1,7 @@
 fastapi
 uvicorn[standard]
 google-genai
+google-generativeai
 python-docx
 pydantic
 python-multipart
