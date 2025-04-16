@@ -4,6 +4,8 @@ import tempfile
 import time
 import json
 import traceback
+import boto3
+from botocore.client import Config
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Depends
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,8 +23,39 @@ from docx.shared import Inches, Pt
 API_KEY = os.getenv("GEMINI_API_KEY")
 MODEL_NAME = "gemini-2.5-pro-exp-03-25" # Or consider making this configurable
 
+# --- R2 Configuration ---
+R2_ENDPOINT = os.getenv("R2_ENDPOINT")
+R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID")
+R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY")
+R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME", "transcript")
+
 # --- Initialize FastAPI App ---
 app = FastAPI(title="Gemini Transcriber API")
+
+# --- Initialize R2 Client ---
+def get_r2_client():
+    """Initialize and return an S3 client configured for Cloudflare R2."""
+    if not all([R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY]):
+        print("ERROR: One or more R2 environment variables not set.")
+        return None
+    
+    try:
+        # Configure boto3 to use Cloudflare R2
+        s3_client = boto3.client(
+            's3',
+            endpoint_url=R2_ENDPOINT,
+            aws_access_key_id=R2_ACCESS_KEY_ID,
+            aws_secret_access_key=R2_SECRET_ACCESS_KEY,
+            config=Config(signature_version='s3v4')
+        )
+        print("R2 client initialized successfully.")
+        return s3_client
+    except Exception as e:
+        print(f"ERROR: Failed to initialize R2 client: {e}")
+        print(traceback.format_exc())
+        return None
+
+r2_client = get_r2_client()  # Initialize client globally
 
 # --- CORS Middleware ---
 # Allow requests from your frontend development server and production domain
@@ -30,6 +63,7 @@ app = FastAPI(title="Gemini Transcriber API")
 origins = [
     "http://localhost:3000", # Default Next.js dev port
     "http://127.0.0.1:3000",
+    "https://transcribe-js.vercel.app"
     # Add your Vercel deployment URL(s) here later
 ]
 
@@ -81,6 +115,7 @@ class TranscriptionRequestData(BaseModel):
 class TranscriptionResponse(BaseModel):
     transcript_turns: List[TranscriptTurn]
     gemini_file_name: str # To identify the file for DOCX generation
+    r2_object_key: Optional[str] = None # To identify the file in R2 storage
 
 class DocxRequest(BaseModel):
     gemini_file_name: str # Use the name returned by /transcribe
@@ -89,6 +124,46 @@ class DocxRequest(BaseModel):
 
 
 # --- Helper Functions ---
+
+async def upload_to_r2(file_content: bytes, file_name: str, content_type: str):
+    """Upload a file to Cloudflare R2 storage and return the object key."""
+    if not r2_client:
+        raise HTTPException(status_code=503, detail="R2 storage service unavailable.")
+    
+    try:
+        # Generate a unique object key using timestamp and original filename
+        timestamp = int(time.time())
+        object_key = f"{timestamp}_{file_name}"
+        
+        # Upload the file to R2
+        r2_client.put_object(
+            Bucket=R2_BUCKET_NAME,
+            Key=object_key,
+            Body=file_content,
+            ContentType=content_type
+        )
+        
+        print(f"File uploaded to R2: {object_key}")
+        return object_key
+    except Exception as e:
+        print(f"Error uploading to R2: {e}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Failed to upload file to R2: {e}")
+
+async def delete_from_r2(object_key: str):
+    """Delete a file from Cloudflare R2 storage."""
+    if not r2_client:
+        print("Warning: Cannot delete from R2, client not available.")
+        return
+    
+    try:
+        r2_client.delete_object(
+            Bucket=R2_BUCKET_NAME,
+            Key=object_key
+        )
+        print(f"File deleted from R2: {object_key}")
+    except Exception as e:
+        print(f"Warning: Could not delete file from R2 {object_key}: {e}")
 
 def get_audio_mime_type(file_extension):
     """Maps file extension to MIME type for Gemini File API."""
@@ -340,11 +415,14 @@ async def transcribe_audio(
     gemini_client: genai.Client = Depends(get_gemini_client) # Dependency injection
 ):
     """
-    Receives audio file and metadata, uploads to Gemini,
+    Receives audio file and metadata, uploads to R2 and Gemini,
     generates transcript, and returns transcript data.
     """
     if not gemini_client:
         raise HTTPException(status_code=503, detail="Gemini service unavailable. Check API key/config.")
+    
+    if not r2_client:
+        raise HTTPException(status_code=503, detail="R2 storage service unavailable. Check R2 configuration.")
 
     # Parse the JSON data string
     try:
@@ -358,10 +436,17 @@ async def transcribe_audio(
         raise HTTPException(status_code=400, detail=f"Unsupported audio file type: {file_extension}")
 
     gemini_file_obj = None
+    r2_object_key = None
+    
     try:
-        # Save uploaded file temporarily
+        # Read the file content
+        content = await audio_file.read()
+        
+        # Upload to R2
+        r2_object_key = await upload_to_r2(content, audio_file.filename, mime_type)
+        
+        # Save uploaded file temporarily for Gemini processing
         with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}") as temp_audio:
-            content = await audio_file.read()
             temp_audio.write(content)
             temp_audio_path = temp_audio.name
             print(f"Temporary audio file saved at: {temp_audio_path}")
@@ -374,28 +459,31 @@ async def transcribe_audio(
 
         return TranscriptionResponse(
             transcript_turns=transcript_turns,
-            gemini_file_name=gemini_file_obj.name # Return the Gemini file name
+            gemini_file_name=gemini_file_obj.name,
+            r2_object_key=r2_object_key
         )
 
     except HTTPException as e:
-        # If upload failed but we got a gemini_file object, try to clean it up
+        # Clean up resources on error
         if gemini_file_obj:
             await cleanup_gemini_file(gemini_file_obj.name, gemini_client)
+        if r2_object_key:
+            await delete_from_r2(r2_object_key)
         raise e # Re-raise the exception
     except Exception as e:
         print(f"Error during transcription process: {e}")
         print(traceback.format_exc())
-        # If upload succeeded but transcription failed, try to clean up
+        # Clean up resources on error
         if gemini_file_obj:
             await cleanup_gemini_file(gemini_file_obj.name, gemini_client)
+        if r2_object_key:
+            await delete_from_r2(r2_object_key)
         raise HTTPException(status_code=500, detail=f"An internal error occurred: {e}")
     finally:
         # Clean up temporary file
         if 'temp_audio_path' in locals() and os.path.exists(temp_audio_path):
             os.unlink(temp_audio_path)
             print(f"Temporary audio file deleted: {temp_audio_path}")
-        # Note: We don't delete the Gemini file here automatically.
-        # The frontend should call /cleanup endpoint if needed, or we rely on Gemini's TTL.
 
 
 @app.post("/generate_docx")
@@ -426,18 +514,37 @@ async def generate_docx_endpoint(request: DocxRequest):
 @app.post("/cleanup/{gemini_file_name}")
 async def cleanup_file(
     gemini_file_name: str,
+    r2_object_key: Optional[str] = None,
     gemini_client: genai.Client = Depends(get_gemini_client) # Dependency injection
 ):
     """
-    Explicitly deletes a file from the Gemini File API.
+    Explicitly deletes files from Gemini File API and R2 storage.
     """
     if not gemini_client:
         raise HTTPException(status_code=503, detail="Gemini service unavailable.")
     if not gemini_file_name or not gemini_file_name.startswith("files/"):
          raise HTTPException(status_code=400, detail="Invalid Gemini file name format.")
 
+    # Clean up Gemini file
     await cleanup_gemini_file(gemini_file_name, gemini_client)
-    return {"message": f"Attempted cleanup for file: {gemini_file_name}"}
+    
+    # Clean up R2 file if provided
+    if r2_object_key:
+        await delete_from_r2(r2_object_key)
+        return {"message": f"Attempted cleanup for Gemini file: {gemini_file_name} and R2 file: {r2_object_key}"}
+    
+    return {"message": f"Attempted cleanup for Gemini file: {gemini_file_name}"}
+
+@app.post("/cleanup_r2/{r2_object_key}")
+async def cleanup_r2_file(r2_object_key: str):
+    """
+    Explicitly deletes a file from R2 storage.
+    """
+    if not r2_client:
+        raise HTTPException(status_code=503, detail="R2 storage service unavailable.")
+    
+    await delete_from_r2(r2_object_key)
+    return {"message": f"Attempted cleanup for R2 file: {r2_object_key}"}
 
 
 # --- Root Endpoint (Optional) ---

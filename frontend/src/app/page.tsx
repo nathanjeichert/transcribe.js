@@ -32,6 +32,7 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string>('');
   const [geminiFileName, setGeminiFileName] = useState<string | null>(null); // To store the Gemini file name for cleanup/docx
+  const [r2ObjectKey, setR2ObjectKey] = useState<string | null>(null); // To store the R2 object key for cleanup
   const [audioDuration, setAudioDuration] = useState<string | null>(null); // To store calculated duration
   const [ffmpegLoaded, setFfmpegLoaded] = useState(false);
   const ffmpegRef = useRef<import('@ffmpeg/ffmpeg').FFmpeg | null>(null); // Use imported type or null
@@ -85,6 +86,7 @@ export default function Home() {
       setError(null);
       setStatusMessage('');
       setGeminiFileName(null);
+      setR2ObjectKey(null); // Clear R2 object key
       setAudioDuration(null); // Clear duration
       console.log("File selected:", selectedFile.name);
     }
@@ -251,6 +253,7 @@ export default function Home() {
       // 4. Handle response
       setTranscriptTurns(result.transcript_turns);
       setGeminiFileName(result.gemini_file_name); // Store for DOCX and cleanup
+      setR2ObjectKey(result.r2_object_key); // Store R2 object key for cleanup
       setStatusMessage("Transcription complete!");
       console.log("Transcription successful:", result);
 
@@ -264,6 +267,50 @@ export default function Home() {
       setIsProcessing(false);
     }
   };
+
+  // Function to clean up files from Gemini and R2
+  const cleanupFiles = async () => {
+    if (geminiFileName || r2ObjectKey) {
+      setStatusMessage("Cleaning up temporary files...");
+      
+      try {
+        const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+        
+        // Clean up both Gemini and R2 files in one request if both exist
+        if (geminiFileName && r2ObjectKey) {
+          await fetch(`${apiUrl}/cleanup/${geminiFileName}?r2_object_key=${r2ObjectKey}`, {
+            method: 'POST',
+          });
+        } 
+        // Clean up only Gemini file
+        else if (geminiFileName) {
+          await fetch(`${apiUrl}/cleanup/${geminiFileName}`, {
+            method: 'POST',
+          });
+        } 
+        // Clean up only R2 file
+        else if (r2ObjectKey) {
+          await fetch(`${apiUrl}/cleanup_r2/${r2ObjectKey}`, {
+            method: 'POST',
+          });
+        }
+        
+        console.log("Files cleaned up successfully");
+      } catch (err) {
+        console.error("Error cleaning up files:", err);
+        // Don't show error to user, just log it
+      }
+    }
+  };
+
+  // Clean up files when component unmounts
+  useEffect(() => {
+    return () => {
+      if (geminiFileName || r2ObjectKey) {
+        cleanupFiles();
+      }
+    };
+  }, [geminiFileName, r2ObjectKey]);
 
   const handleDownloadDocx = async () => {
     if (!transcriptTurns || !geminiFileName) {
@@ -466,7 +513,7 @@ export default function Home() {
               value={transcriptTurns.map(turn => `${turn.speaker}:\t${turn.text}`).join('\n\n')}
               className="w-full h-64 p-2 border rounded bg-white font-mono text-sm" // Monospace font for alignment
             />
-            <div className="text-center mt-4">
+            <div className="text-center mt-4 space-y-3">
                <button
                  onClick={handleDownloadDocx}
                  disabled={isProcessing || !geminiFileName} // Also disable if no geminiFileName
@@ -474,6 +521,21 @@ export default function Home() {
                >
                  Download Transcript (.docx)
                </button>
+               
+               {(geminiFileName || r2ObjectKey) && (
+                 <div>
+                   <button
+                     onClick={cleanupFiles}
+                     disabled={isProcessing}
+                     className="bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition duration-150 ease-in-out mt-2"
+                   >
+                     Clean Up Temporary Files
+                   </button>
+                   <p className="text-xs text-gray-500 mt-1">
+                     Files will be automatically cleaned up when you leave this page.
+                   </p>
+                 </div>
+               )}
             </div>
           </div>
         )}
