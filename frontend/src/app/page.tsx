@@ -1,8 +1,9 @@
 "use client"; // Required for useState, useEffect, useRef event handlers
 
 import React, { useState, useRef, useEffect } from 'react';
-import { FFmpeg } from '@ffmpeg/ffmpeg';
-import { fetchFile, toBlobURL } from '@ffmpeg/util';
+// Dynamically import FFmpeg libraries only on the client-side
+// import { FFmpeg } from '@ffmpeg/ffmpeg'; // Removed static import
+// import { fetchFile, toBlobURL } from '@ffmpeg/util'; // Removed static import
 
 // Define interfaces for our data structures (matching backend Pydantic models)
 interface TranscriptTurn {
@@ -33,27 +34,35 @@ export default function Home() {
   const [geminiFileName, setGeminiFileName] = useState<string | null>(null); // To store the Gemini file name for cleanup/docx
   const [audioDuration, setAudioDuration] = useState<string | null>(null); // To store calculated duration
   const [ffmpegLoaded, setFfmpegLoaded] = useState(false);
-  const ffmpegRef = useRef(new FFmpeg());
+  const ffmpegRef = useRef<any>(null); // Initialize with null, type will be FFmpeg instance later
   const messageRef = useRef<HTMLParagraphElement | null>(null); // For FFmpeg logs
 
   // --- FFmpeg Setup ---
   useEffect(() => {
     const loadFFmpeg = async () => {
       setStatusMessage("Loading FFmpeg assembly...");
-      const ffmpeg = ffmpegRef.current;
-      // Log progress
-      ffmpeg.on('log', ({ message }) => {
-        if (messageRef.current) messageRef.current.innerHTML = message;
-        console.log(message);
-      });
-      // Base URL for loading ffmpeg-core.js, wasm etc.
-      // Adjust this if your assets are hosted elsewhere
-      const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
       try {
-        await ffmpeg.load({
+        // Dynamic Imports
+        const { FFmpeg } = await import('@ffmpeg/ffmpeg');
+        const { toBlobURL } = await import('@ffmpeg/util');
+
+        const ffmpegInstance = new FFmpeg();
+        ffmpegRef.current = ffmpegInstance; // Store the instance
+
+        // Log progress
+        ffmpegInstance.on('log', ({ message }: { message: string }) => { // Add type for message
+          if (messageRef.current) messageRef.current.innerHTML = message;
+          console.log(message);
+        });
+
+        // Base URL for loading ffmpeg-core.js, wasm etc.
+        const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+
+        await ffmpegInstance.load({
           coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
           wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
         });
+
         setFfmpegLoaded(true);
         setStatusMessage("FFmpeg loaded.");
         console.log("FFmpeg loaded successfully.");
@@ -123,17 +132,19 @@ export default function Home() {
     setAudioDuration(null);
 
     let audioBlob: Blob | null = null; // Needs to be let as it's assigned in conditional blocks
-    const ffmpeg = ffmpegRef.current;
+    const ffmpeg = ffmpegRef.current; // Get instance from ref
     // let calculatedDuration: string | null = null; // Removed unused variable
 
     try {
       // 1. Handle File Input & Conversion (if necessary)
       if (file.type.startsWith("video/")) {
-        if (!ffmpegLoaded) {
-          throw new Error("FFmpeg not loaded. Cannot convert video.");
+        if (!ffmpegLoaded || !ffmpeg) { // Check both loaded flag and ref instance
+          throw new Error("FFmpeg not loaded or initialized. Cannot convert video.");
         }
         setStatusMessage("Converting video to MP3 audio...");
         const inputFileName = `input.${file.name.split('.').pop() || 'mp4'}`;
+        // Dynamic import for fetchFile inside the handler where it's needed
+        const { fetchFile } = await import('@ffmpeg/util');
         const outputFileName = "output.mp3";
 
         await ffmpeg.writeFile(inputFileName, await fetchFile(file));
@@ -178,8 +189,10 @@ export default function Home() {
         audioBlob = file; // Use original audio file directly
 
         // Try to get duration for audio files too
-         if (ffmpegLoaded) {
+         if (ffmpegLoaded && ffmpeg) { // Check both loaded flag and ref instance
             const inputFileName = `input.${file.name.split('.').pop() || 'mp3'}`;
+             // Dynamic import for fetchFile inside the handler where it's needed
+            const { fetchFile } = await import('@ffmpeg/util');
             await ffmpeg.writeFile(inputFileName, await fetchFile(file));
             // let duration = 0; // Removed unused variable
             try {
