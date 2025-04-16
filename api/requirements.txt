@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+google-generativeai
+python-docx
+pydantic
+python-multipart

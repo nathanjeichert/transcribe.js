@@ -1,0 +1,7 @@
+streamlit
+google-genai
+python-docx
+ffmpeg-python
+pydub
+pydantic
+google-generativeai

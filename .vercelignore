@@ -1,0 +1,26 @@
+# Ignore the legacy Streamlit application backup
+_legacy_streamlit/
+
+# Ignore Node.js dependency directories
+frontend/node_modules/
+node_modules/
+
+# Ignore Next.js build output (Vercel handles this)
+frontend/.next/
+.next/
+
+# Ignore Python virtual environment folders (if any created locally)
+venv/
+.venv/
+env/
+.env/
+*/__pycache__/
+*.pyc
+
+# Ignore local environment files (API keys should be set in Vercel UI)
+.env*
+frontend/.env*
+
+# Ignore OS-specific files
+.DS_Store
+Thumbs.db
