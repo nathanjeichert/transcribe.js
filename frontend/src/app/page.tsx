@@ -1,11 +1,8 @@
-"use client"; // Required for useState, useEffect, useRef event handlers
+"use client";                                      // Next‑JS client component
 
-import React, { useState, useRef, useEffect } from 'react';
-// Dynamically import FFmpeg libraries only on the client-side
-// import { FFmpeg } from '@ffmpeg/ffmpeg'; // Removed static import
-// import { fetchFile, toBlobURL } from '@ffmpeg/util'; // Removed static import
+import React, { useState, useEffect } from "react";
 
-// Define interfaces for our data structures (matching backend Pydantic models)
+/* ────────────────  TYPES  ──────────────── */
 interface TranscriptTurn {
   speaker: string;
   text: string;
@@ -20,373 +17,214 @@ interface CaseInfo {
   location?: string;
 }
 
+/* ───────────  UTILITY FUNCTIONS  ─────────── */
+const hhmmss = (seconds: number) =>
+  [3600, 60, 1]
+    .map((d) => String(Math.floor(seconds / d) % 60).padStart(2, "0"))
+    .join(":");
+
+const getDuration = (blob: Blob): Promise<string> =>
+  new Promise((ok, err) => {
+    const a = document.createElement("audio");
+    a.preload = "metadata";
+    a.onloadedmetadata = () => ok(hhmmss(a.duration));
+    a.onerror = () => err("Could not read duration");
+    a.src = URL.createObjectURL(blob);
+  });
+
+/* ─────────────────  COMPONENT  ───────────────── */
 export default function Home() {
-  // State variables
+  /* ----------  STATE  ---------- */
   const [file, setFile] = useState<File | null>(null);
   const [caseInfo, setCaseInfo] = useState<CaseInfo>({});
-  const [specifySpeakers, setSpecifySpeakers] = useState<boolean>(false);
-  const [numSpeakers, setNumSpeakers] = useState<number>(1);
-  const [speakerNames, setSpeakerNames] = useState<string[]>(['']); // Initialize with one empty speaker
-  const [isProcessing, setIsProcessing] = useState<boolean>(false);
-  const [transcriptTurns, setTranscriptTurns] = useState<TranscriptTurn[] | null>(null);
+  const [specifySpeakers, setSpecifySpeakers] = useState(false);
+  const [numSpeakers, setNumSpeakers] = useState(1);
+  const [speakerNames, setSpeakerNames] = useState<string[]>([""]);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [statusMessage, setStatusMessage] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [statusMessage, setStatusMessage] = useState<string>('');
-  const [geminiFileName, setGeminiFileName] = useState<string | null>(null); // To store the Gemini file name for cleanup/docx
-  const [r2ObjectKey, setR2ObjectKey] = useState<string | null>(null); // To store the R2 object key for cleanup
-  const [audioDuration, setAudioDuration] = useState<string | null>(null); // To store calculated duration
-  const [ffmpegLoaded, setFfmpegLoaded] = useState(false);
-  const ffmpegRef = useRef<import('@ffmpeg/ffmpeg').FFmpeg | null>(null); // Use imported type or null
-  const messageRef = useRef<HTMLParagraphElement | null>(null); // For FFmpeg logs
+  const [transcriptTurns, setTranscriptTurns] = useState<TranscriptTurn[] | null>(
+    null
+  );
+  const [geminiFileName, setGeminiFileName] = useState<string | null>(null);
+  const [r2ObjectKey, setR2ObjectKey] = useState<string | null>(null);
+  const [audioDuration, setAudioDuration] = useState<string | null>(null);
 
-  // --- FFmpeg Setup ---
-  useEffect(() => {
-    const loadFFmpeg = async () => {
-      setStatusMessage("Loading FFmpeg assembly...");
-      try {
-        // Dynamic Imports
-        const { FFmpeg } = await import('@ffmpeg/ffmpeg');
-        const { toBlobURL } = await import('@ffmpeg/util');
+  /* ----------  HELPERS  ---------- */
+  const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-        const ffmpegInstance = new FFmpeg();
-        ffmpegRef.current = ffmpegInstance; // Store the instance
-
-        // Log progress
-        ffmpegInstance.on('log', ({ message }: { message: string }) => { // Add type for message
-          if (messageRef.current) messageRef.current.innerHTML = message;
-          console.log(message);
-        });
-
-        // Base URL for loading ffmpeg-core.js, wasm etc.
-        const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
-
-        await ffmpegInstance.load({
-          coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-          wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
-        });
-
-        setFfmpegLoaded(true);
-        setStatusMessage("FFmpeg loaded.");
-        console.log("FFmpeg loaded successfully.");
-      } catch (err) {
-        console.error("Error loading FFmpeg:", err);
-        setError("Failed to load FFmpeg component. Video conversion unavailable.");
-        setStatusMessage("");
-      }
-    };
-    loadFFmpeg();
-  }, []); // Load FFmpeg only once on component mount
-
-  // --- Event Handlers ---
-
-  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const selectedFile = event.target.files?.[0];
-    if (selectedFile) {
-      setFile(selectedFile);
-      setTranscriptTurns(null); // Clear previous transcript
-      setError(null);
-      setStatusMessage('');
-      setGeminiFileName(null);
-      setR2ObjectKey(null); // Clear R2 object key
-      setAudioDuration(null); // Clear duration
-      console.log("File selected:", selectedFile.name);
-    }
+  /* ----------  EVENT HANDLERS  ---------- */
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0] || null;
+    setFile(f);
+    setTranscriptTurns(null);
+    setError(null);
+    setStatusMessage("");
+    setGeminiFileName(null);
+    setR2ObjectKey(null);
+    setAudioDuration(null);
   };
 
-  const handleCaseInfoChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const { name, value } = event.target;
-    setCaseInfo(prev => ({ ...prev, [name]: value }));
+  const handleCaseChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const { name, value } = e.target;
+    setCaseInfo((p) => ({ ...p, [name]: value }));
   };
 
-  const handleSpeakerNameChange = (index: number, value: string) => {
-    const updatedNames = [...speakerNames];
-    updatedNames[index] = value.toUpperCase(); // Store as uppercase
-    setSpeakerNames(updatedNames);
-  };
-
-  const handleNumSpeakersChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const count = parseInt(event.target.value, 10) || 1;
-    setNumSpeakers(count);
-    // Adjust speakerNames array size
-    setSpeakerNames(prev => {
-      const newNames = [...prev];
-      if (count > newNames.length) {
-        // Add empty strings if increasing
-        return [...newNames, ...Array(count - newNames.length).fill('')];
-      } else {
-        // Truncate if decreasing
-        return newNames.slice(0, count);
-      }
+  const changeNumSpeakers = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const n = Math.max(1, parseInt(e.target.value || "1", 10));
+    setNumSpeakers(n);
+    setSpeakerNames((prev) => {
+      const out = [...prev];
+      if (n > out.length) return [...out, ...Array(n - out.length).fill("")];
+      return out.slice(0, n);
     });
   };
 
-  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+  const changeSpeakerName = (i: number, v: string) => {
+    const arr = [...speakerNames];
+    arr[i] = v.toUpperCase();
+    setSpeakerNames(arr);
+  };
+
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
     if (!file) {
-      setError("Please select a file first.");
+      setError("Choose a file first.");
       return;
     }
 
     setIsProcessing(true);
     setError(null);
-    setTranscriptTurns(null);
-    setStatusMessage("Starting process...");
-    setGeminiFileName(null);
-    setAudioDuration(null);
-
-    let audioBlob: Blob | null = null; // Needs to be let as it's assigned in conditional blocks
-    const ffmpeg = ffmpegRef.current; // Get instance from ref
-    // let calculatedDuration: string | null = null; // Removed unused variable
+    setStatusMessage("Creating secure upload…");
 
     try {
-      // 1. Handle File Input & Conversion (if necessary)
-      if (file.type.startsWith("video/")) {
-        if (!ffmpegLoaded || !ffmpeg) { // Check both loaded flag and ref instance
-          throw new Error("FFmpeg not loaded or initialized. Cannot convert video.");
-        }
-        setStatusMessage("Converting video to MP3 audio...");
-        const inputFileName = `input.${file.name.split('.').pop() || 'mp4'}`;
-        // Dynamic import for fetchFile inside the handler where it's needed
-        const { fetchFile } = await import('@ffmpeg/util');
-        const outputFileName = "output.mp3";
+      /* 1️⃣  presign */
+      const pre = await fetch(
+        `${apiBase}/generate_r2_presigned?filename=${encodeURIComponent(
+          file.name
+        )}&content_type=${encodeURIComponent(file.type)}`,
+        { method: "GET" }
+      );
+      if (!pre.ok) throw new Error(`presign ${pre.status}`);
+      const { upload_url, object_key } = await pre.json();
 
-        await ffmpeg.writeFile(inputFileName, await fetchFile(file));
-
-        // Run FFmpeg command for conversion
-        // Using -vn to remove video, -acodec libmp3lame for MP3, -ab 192k for bitrate
-        // The '-i' flag specifies the input file.
-        // We add '-async 1' to help with potential audio sync issues.
-        // We add '-loglevel error' to reduce console noise, only showing errors.
-        await ffmpeg.exec(['-i', inputFileName, '-vn', '-acodec', 'libmp3lame', '-ab', '192k', '-async', '1', '-loglevel', 'error', outputFileName]);
-
-        setStatusMessage("Reading converted audio...");
-        const data = await ffmpeg.readFile(outputFileName);
-
-        // Get duration using ffprobe (run separately)
-        // Need to write the *original* file again for ffprobe if it was deleted or overwritten
-        // Or better: write original file first, run ffprobe, then run conversion
-        await ffmpeg.writeFile(inputFileName, await fetchFile(file)); // Ensure input file exists for ffprobe
-        // let duration = 0; // Removed unused variable
-        try {
-            // Use ffprobe to get duration. '-show_entries format=duration' gets duration.
-            // '-of default=noprint_wrappers=1:nokey=1' formats output to just the number.
-            // '-v error' suppresses info messages.
-            // Note: Capturing specific stdout here is tricky with current exec signature.
-            // Relying on general logs or potential future library features.
-            await ffmpeg.exec(['-i', inputFileName, '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', '-v', 'error', '-sexagesimal']);
-        } catch (probeErr) {
-            console.error("ffprobe failed:", probeErr);
-            // Continue without duration if ffprobe fails
-        }
-
-
-        audioBlob = new Blob([data], { type: 'audio/mp3' });
-        setStatusMessage("Video converted successfully.");
-
-        // Optional: Clean up files in virtual FS
-        // await ffmpeg.deleteFile(inputFileName);
-        // await ffmpeg.deleteFile(outputFileName);
-
-      } else if (file.type.startsWith("audio/")) {
-        setStatusMessage("Processing audio file...");
-        audioBlob = file; // Use original audio file directly
-
-        // Try to get duration for audio files too
-         if (ffmpegLoaded && ffmpeg) { // Check both loaded flag and ref instance
-            const inputFileName = `input.${file.name.split('.').pop() || 'mp3'}`;
-             // Dynamic import for fetchFile inside the handler where it's needed
-            const { fetchFile } = await import('@ffmpeg/util');
-            await ffmpeg.writeFile(inputFileName, await fetchFile(file));
-            // let duration = 0; // Removed unused variable
-            try {
-                 // Note: Capturing specific stdout here is tricky with current exec signature.
-                 await ffmpeg.exec(['-i', inputFileName, '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', '-v', 'error', '-sexagesimal']);
-                 // We might need to parse the general logs if duration appears there,
-                 // or accept that duration calculation might be less reliable this way.
-                 // For now, we proceed without guaranteed duration capture from this specific exec call.
-            } catch (probeErr) {
-                console.error("ffprobe failed for audio:", probeErr);
-            }
-            // await ffmpeg.deleteFile(inputFileName); // Optional cleanup
-         } else {
-             console.warn("FFmpeg not loaded, cannot calculate audio duration.");
-         }
-
-      } else {
-        throw new Error(`Unsupported file type: ${file.type}`);
-      }
-
-      if (!audioBlob) {
-        throw new Error("Audio processing failed.");
-      }
-
-      // setAudioDuration(calculatedDuration); // Removed state update for unused variable
-      setAudioDuration(null); // Explicitly set to null as calculation is disabled
-
-      // 2. Prepare FormData
-      setStatusMessage("Preparing data for upload...");
-      const formData = new FormData();
-      const requestData = {
-        ...caseInfo,
-        speaker_names: specifySpeakers ? speakerNames.filter(name => name && name.trim() !== '') : null,
-      };
-      formData.append('request_data_json', JSON.stringify(requestData));
-      // Use a generic name for the blob, backend uses mime type anyway
-      formData.append('audio_file', audioBlob, `processed_audio.mp3`); // Send as mp3
-
-      // 3. Call backend /transcribe endpoint
-      setStatusMessage("Uploading audio and requesting transcript...");
-      // Use environment variable for API URL in production
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'; // Default to local FastAPI
-      const response = await fetch(`${apiUrl}/transcribe`, {
-        method: 'POST',
-        body: formData,
-        // Headers are automatically set for FormData
+      /* 2️⃣  upload */
+      setStatusMessage("Uploading file…");
+      const put = await fetch(upload_url, {
+        method: "PUT",
+        headers: { "Content-Type": file.type },
+        body: file,
       });
+      if (!put.ok) throw new Error(`upload ${put.status}`);
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ detail: response.statusText }));
-        throw new Error(`API Error (${response.status}): ${errorData.detail || 'Unknown error'}`);
-      }
+      /* 3️⃣  request transcript */
+      setStatusMessage("Requesting transcript…");
+      const fd = new FormData();
+      fd.append(
+        "request_data_json",
+        JSON.stringify({
+          ...caseInfo,
+          speaker_names: specifySpeakers
+            ? speakerNames.filter((s) => s.trim())
+            : null,
+        })
+      );
+      fd.append("r2_object_key", object_key);
+      const tr = await fetch(`${apiBase}/transcribe`, { method: "POST", body: fd });
+      const tj = await tr.json();
+      if (!tr.ok) throw new Error(tj.detail || tr.statusText);
 
-      const result = await response.json();
+      setTranscriptTurns(tj.transcript_turns);
+      setGeminiFileName(tj.gemini_file_name);
+      setR2ObjectKey(tj.r2_object_key || object_key);
 
-      // 4. Handle response
-      setTranscriptTurns(result.transcript_turns);
-      setGeminiFileName(result.gemini_file_name); // Store for DOCX and cleanup
-      setR2ObjectKey(result.r2_object_key); // Store R2 object key for cleanup
+      /* 4️⃣  duration */
+      setStatusMessage("Calculating duration…");
+      setAudioDuration(await getDuration(file));
+
       setStatusMessage("Transcription complete!");
-      console.log("Transcription successful:", result);
-
-    } catch (err: unknown) { // Changed 'any' to 'unknown'
-      console.error("Error during submission:", err);
-      // Type check for error message
-      const errorMessage = err instanceof Error ? err.message : "An unexpected error occurred.";
-      setError(errorMessage);
-      setStatusMessage(''); // Clear status on error
+    } catch (err: any) {
+      setError(err.message || "Error");
+      setStatusMessage("");
     } finally {
       setIsProcessing(false);
     }
   };
 
-  // Function to clean up files from Gemini and R2
   const cleanupFiles = async () => {
-    if (geminiFileName || r2ObjectKey) {
-      setStatusMessage("Cleaning up temporary files...");
-      
-      try {
-        const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-        
-        // Clean up both Gemini and R2 files in one request if both exist
-        if (geminiFileName && r2ObjectKey) {
-          await fetch(`${apiUrl}/cleanup/${geminiFileName}?r2_object_key=${r2ObjectKey}`, {
-            method: 'POST',
-          });
-        } 
-        // Clean up only Gemini file
-        else if (geminiFileName) {
-          await fetch(`${apiUrl}/cleanup/${geminiFileName}`, {
-            method: 'POST',
-          });
-        } 
-        // Clean up only R2 file
-        else if (r2ObjectKey) {
-          await fetch(`${apiUrl}/cleanup_r2/${r2ObjectKey}`, {
-            method: 'POST',
-          });
-        }
-        
-        console.log("Files cleaned up successfully");
-      } catch (err) {
-        console.error("Error cleaning up files:", err);
-        // Don't show error to user, just log it
+    if (!geminiFileName && !r2ObjectKey) return;
+    setStatusMessage("Cleaning up…");
+    try {
+      if (geminiFileName && r2ObjectKey) {
+        await fetch(
+          `${apiBase}/cleanup/${geminiFileName}?r2_object_key=${r2ObjectKey}`,
+          { method: "POST" }
+        );
+      } else if (geminiFileName) {
+        await fetch(`${apiBase}/cleanup/${geminiFileName}`, { method: "POST" });
+      } else if (r2ObjectKey) {
+        await fetch(`${apiBase}/cleanup_r2/${r2ObjectKey}`, { method: "POST" });
       }
+      setGeminiFileName(null);
+      setR2ObjectKey(null);
+      setStatusMessage("Temporary files deleted.");
+    } catch {
+      setStatusMessage("Cleanup attempted (see server logs for details).");
     }
   };
-
-  // Clean up files when component unmounts
-  useEffect(() => {
-    return () => {
-      if (geminiFileName || r2ObjectKey) {
-        cleanupFiles();
-      }
-    };
-  }, [geminiFileName, r2ObjectKey]);
 
   const handleDownloadDocx = async () => {
     if (!transcriptTurns || !geminiFileName) {
-      setError("No transcript available to download or missing file identifier.");
+      setError("Nothing to download.");
       return;
     }
-    if (!transcriptTurns || !geminiFileName) {
-      setError("No transcript available to download or missing file identifier.");
-      return;
-    }
-    setError(null);
-    setStatusMessage("Generating DOCX...");
-    setIsProcessing(true); // Indicate activity
-
+    setIsProcessing(true);
+    setStatusMessage("Generating DOCX…");
     try {
-      // 1. Prepare title data
-      const titleData = {
-          ...caseInfo,
-          FILE_NAME: file?.name || 'unknown_file',
-          FILE_DURATION: audioDuration || "N/A", // Use stored duration
-      };
-
-      // 2. Call backend /generate_docx endpoint
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-      const response = await fetch(`${apiUrl}/generate_docx`, {
-          method: 'POST',
-          headers: {
-              'Content-Type': 'application/json',
+      const resp = await fetch(`${apiBase}/generate_docx`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          gemini_file_name: geminiFileName,
+          title_data: {
+            ...caseInfo,
+            FILE_NAME: file?.name || "file",
+            FILE_DURATION: audioDuration || "N/A",
           },
-          body: JSON.stringify({
-              gemini_file_name: geminiFileName, // Pass the stored name
-              title_data: titleData,
-              transcript_turns: transcriptTurns,
-          }),
+          transcript_turns: transcriptTurns,
+        }),
       });
-
-      if (!response.ok) {
-          const errorData = await response.json().catch(() => ({ detail: response.statusText }));
-          throw new Error(`API Error (${response.status}): ${errorData.detail || 'Failed to generate DOCX'}`);
+      if (!resp.ok) {
+        const d = await resp.json().catch(() => ({}));
+        throw new Error(d.detail || resp.statusText);
       }
-
-      // 3. Handle the file stream response and trigger download
-      const blob = await response.blob();
-      const downloadUrl = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = downloadUrl;
-      // Extract filename from content-disposition header if available, otherwise generate one
-      const disposition = response.headers.get('content-disposition');
-      let downloadFilename = `${file?.name.split('.')[0] || 'transcript'}_transcript.docx`; // Default
-      if (disposition && disposition.indexOf('attachment') !== -1) {
-          const filenameRegex = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/;
-          const matches = filenameRegex.exec(disposition);
-          if (matches != null && matches[1]) {
-              downloadFilename = matches[1].replace(/['"]/g, '');
-          }
-      }
-      link.setAttribute('download', downloadFilename);
-      document.body.appendChild(link);
-      link.click();
-      link.parentNode?.removeChild(link);
-      window.URL.revokeObjectURL(downloadUrl); // Clean up blob URL
-
-      setStatusMessage("DOCX downloaded successfully.");
-
-    } catch (err: unknown) { // Changed 'any' to 'unknown'
-        console.error("Error downloading DOCX:", err);
-         // Type check for error message
-        const errorMessage = err instanceof Error ? err.message : "Failed to download DOCX.";
-        setError(errorMessage);
-        setStatusMessage('');
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${(file?.name.split(".")[0] || "transcript")}_transcript.docx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      setStatusMessage("DOCX downloaded.");
+    } catch (e: any) {
+      setError(e.message || "Download failed");
+      setStatusMessage("");
     } finally {
-        setIsProcessing(false); // Stop indicating activity
+      setIsProcessing(false);
     }
   };
 
-  // --- Render Logic ---
+  /* cleanup on unmount */
+  useEffect(() => {
+    return () => {
+      if (geminiFileName || r2ObjectKey) cleanupFiles();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [geminiFileName, r2ObjectKey]);
+
+  /* ────────────────  RENDER  ──────────────── */
   return (
     <main className="flex min-h-screen flex-col items-center justify-start p-8 md:p-16 bg-gray-50">
       <div className="w-full max-w-4xl bg-white p-8 rounded-lg shadow-md">
@@ -394,154 +232,218 @@ export default function Home() {
           📄 Gemini Legal Transcript Generator (Next.js)
         </h1>
         <p className="mb-6 text-center text-gray-600">
-          Upload an audio or video file to generate a transcript using the Gemini API.
+          Upload an audio or video file to generate a transcript using the
+          Gemini API.
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-6">
-          {/* Case Information */}
+          {/* ────────── Case info ────────── */}
           <fieldset className="border p-4 rounded">
-            <legend className="text-lg font-semibold px-2 text-gray-700">Case Information (Optional)</legend>
+            <legend className="text-lg font-semibold px-2 text-gray-700">
+              Case Information (Optional)
+            </legend>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-2">
-              <input type="text" name="case_name" placeholder="Case Name" value={caseInfo.case_name || ''} onChange={handleCaseInfoChange} className="border p-2 rounded w-full" />
-              <input type="text" name="case_number" placeholder="Case Number" value={caseInfo.case_number || ''} onChange={handleCaseInfoChange} className="border p-2 rounded w-full" />
-              <input type="text" name="firm_name" placeholder="Firm or Organization" value={caseInfo.firm_name || ''} onChange={handleCaseInfoChange} className="border p-2 rounded w-full" />
-              <input type="date" name="input_date" placeholder="Date" value={caseInfo.input_date || ''} onChange={handleCaseInfoChange} className="border p-2 rounded w-full" />
-              <input type="time" name="input_time" placeholder="Time" value={caseInfo.input_time || ''} onChange={handleCaseInfoChange} className="border p-2 rounded w-full" />
-              <input type="text" name="location" placeholder="Location" value={caseInfo.location || ''} onChange={handleCaseInfoChange} className="border p-2 rounded w-full" />
+              <input
+                type="text"
+                name="case_name"
+                placeholder="Case Name"
+                value={caseInfo.case_name || ""}
+                onChange={handleCaseChange}
+                className="border p-2 rounded w-full"
+              />
+              <input
+                type="text"
+                name="case_number"
+                placeholder="Case Number"
+                value={caseInfo.case_number || ""}
+                onChange={handleCaseChange}
+                className="border p-2 rounded w-full"
+              />
+              <input
+                type="text"
+                name="firm_name"
+                placeholder="Firm / Organization"
+                value={caseInfo.firm_name || ""}
+                onChange={handleCaseChange}
+                className="border p-2 rounded w-full"
+              />
+              <input
+                type="date"
+                name="input_date"
+                value={caseInfo.input_date || ""}
+                onChange={handleCaseChange}
+                className="border p-2 rounded w-full"
+              />
+              <input
+                type="time"
+                name="input_time"
+                value={caseInfo.input_time || ""}
+                onChange={handleCaseChange}
+                className="border p-2 rounded w-full"
+              />
+              <input
+                type="text"
+                name="location"
+                placeholder="Location"
+                value={caseInfo.location || ""}
+                onChange={handleCaseChange}
+                className="border p-2 rounded w-full"
+              />
             </div>
           </fieldset>
 
-          {/* Speaker Information */}
+          {/* ────────── Speaker info ────────── */}
           <fieldset className="border p-4 rounded">
-            <legend className="text-lg font-semibold px-2 text-gray-700">Speaker Information (Optional)</legend>
+            <legend className="text-lg font-semibold px-2 text-gray-700">
+              Speaker Information (Optional)
+            </legend>
             <div className="mt-2 space-y-3">
-              <div className="flex items-center gap-2">
+              <label className="flex items-center gap-2">
                 <input
                   type="checkbox"
-                  id="specifySpeakers"
                   checked={specifySpeakers}
                   onChange={(e) => setSpecifySpeakers(e.target.checked)}
-                  className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                  className="h-4 w-4 text-blue-600 border-gray-300 rounded"
                 />
-                <label htmlFor="specifySpeakers" className="text-gray-700">Manually specify speaker identifiers?</label>
-              </div>
+                <span className="text-gray-700">
+                  Manually specify speaker identifiers?
+                </span>
+              </label>
 
               {specifySpeakers && (
                 <>
-                  <div className="flex items-center gap-2">
-                    <label htmlFor="numSpeakers" className="text-sm font-medium text-gray-700">Number of Speakers:</label>
+                  <label className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-gray-700">
+                      Number of Speakers:
+                    </span>
                     <input
                       type="number"
-                      id="numSpeakers"
                       min="1"
                       value={numSpeakers}
-                      onChange={handleNumSpeakersChange}
+                      onChange={changeNumSpeakers}
                       className="border p-1 rounded w-16 text-center"
                     />
-                  </div>
+                  </label>
                   <div className="space-y-2 pl-4">
-                    {Array.from({ length: numSpeakers }).map((_, index) => (
+                    {Array.from({ length: numSpeakers }).map((_, i) => (
                       <input
-                        key={index}
+                        key={i}
                         type="text"
-                        placeholder={`Speaker ${index + 1} Identifier (ALL CAPS)`}
-                        value={speakerNames[index] || ''}
-                        onChange={(e) => handleSpeakerNameChange(index, e.target.value)}
-                        className="border p-2 rounded w-full md:w-1/2 uppercase" // Enforce uppercase visually
-                        style={{ textTransform: 'uppercase' }} // CSS uppercase
+                        placeholder={`Speaker ${i + 1} Identifier (ALL CAPS)`}
+                        value={speakerNames[i] || ""}
+                        onChange={(e) => changeSpeakerName(i, e.target.value)}
+                        className="border p-2 rounded w-full md:w-1/2 uppercase"
+                        style={{ textTransform: "uppercase" }}
                       />
                     ))}
                   </div>
                 </>
               )}
-               {!specifySpeakers && (
-                 <p className="text-sm text-gray-500 pl-4">Generic identifiers (SPEAKER 1, SPEAKER 2, etc.) will be used.</p>
-               )}
+              {!specifySpeakers && (
+                <p className="text-sm text-gray-500 pl-4">
+                  Generic identifiers (SPEAKER 1, etc.) will be used.
+                </p>
+              )}
             </div>
           </fieldset>
 
-          {/* File Upload */}
+          {/* ────────── File upload ────────── */}
           <div className="border p-4 rounded bg-gray-50">
-             <label htmlFor="file-upload" className="block text-lg font-semibold mb-2 text-gray-700">Upload Audio/Video File</label>
-             <input
-               id="file-upload"
-               type="file"
-               onChange={handleFileChange}
-               accept="audio/*,video/*" // Accept common audio/video types
-               className="block w-full text-sm text-gray-500
-                          file:mr-4 file:py-2 file:px-4
-                          file:rounded-full file:border-0
-                          file:text-sm file:font-semibold
-                          file:bg-blue-50 file:text-blue-700
-                          hover:file:bg-blue-100"
-             />
-             {file && <p className="text-sm text-gray-600 mt-2">Selected: {file.name} ({Math.round(file.size / 1024)} KB)</p>}
+            <label
+              htmlFor="file-upload"
+              className="block text-lg font-semibold mb-2 text-gray-700"
+            >
+              Upload Audio/Video File
+            </label>
+            <input
+              id="file-upload"
+              type="file"
+              accept="audio/*,video/*"
+              onChange={handleFileChange}
+              className="block w-full text-sm text-gray-500
+                        file:mr-4 file:py-2 file:px-4
+                        file:rounded-full file:border-0
+                        file:text-sm file:font-semibold
+                        file:bg-blue-50 file:text-blue-700
+                        hover:file:bg-blue-100"
+            />
+            {file && (
+              <p className="text-sm text-gray-600 mt-2">
+                Selected: {file.name} ({Math.round(file.size / 1024)} KB)
+              </p>
+            )}
           </div>
 
-          {/* Submit Button */}
+          {/* ────────── Submit ────────── */}
           <div className="text-center">
             <button
               type="submit"
               disabled={!file || isProcessing}
               className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-6 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition duration-150 ease-in-out"
             >
-              {isProcessing ? 'Processing...' : 'Generate Transcript'}
+              {isProcessing ? "Processing…" : "Generate Transcript"}
             </button>
           </div>
         </form>
 
-        {/* Status & Error Display */}
-        <div className="mt-6 text-center min-h-[2em]"> {/* Added min-height */}
+        {/* ────────── Status / Error ────────── */}
+        <div className="mt-6 text-center min-h-[2em]">
           {isProcessing && (
-            <div>
-                <p className="text-blue-600 animate-pulse">{statusMessage || 'Processing...'}</p>
-                {/* FFmpeg log display area */}
-                <p ref={messageRef} className="text-sm text-gray-500 mt-1 font-mono"></p>
-            </div>
+            <p className="text-blue-600 animate-pulse">{statusMessage}</p>
           )}
           {error && <p className="text-red-600 font-semibold">Error: {error}</p>}
-          {!isProcessing && !error && statusMessage && <p className="text-green-600">{statusMessage}</p>}
+          {!isProcessing && !error && statusMessage && (
+            <p className="text-green-600">{statusMessage}</p>
+          )}
         </div>
 
-        {/* Transcript Display */}
-        {transcriptTurns && transcriptTurns.length > 0 && (
+        {/* ────────── Transcript display ────────── */}
+        {transcriptTurns && (
           <div className="mt-8 border p-4 rounded bg-gray-50">
-            <h2 className="text-xl font-semibold mb-4 text-gray-800">Generated Transcript</h2>
-            {audioDuration && <p className="text-sm text-gray-600 mb-2">Audio Duration: {audioDuration}</p>}
+            <h2 className="text-xl font-semibold mb-4 text-gray-800">
+              Generated Transcript
+            </h2>
+            {audioDuration && (
+              <p className="text-sm text-gray-600 mb-2">
+                Audio Duration: {audioDuration}
+              </p>
+            )}
             <textarea
               readOnly
-              value={transcriptTurns.map(turn => `${turn.speaker}:\t${turn.text}`).join('\n\n')}
-              className="w-full h-64 p-2 border rounded bg-white font-mono text-sm" // Monospace font for alignment
+              value={transcriptTurns
+                .map((t) => `${t.speaker}:\t${t.text}`)
+                .join("\n\n")}
+              className="w-full h-64 p-2 border rounded bg-white font-mono text-sm"
             />
             <div className="text-center mt-4 space-y-3">
-               <button
-                 onClick={handleDownloadDocx}
-                 disabled={isProcessing || !geminiFileName} // Also disable if no geminiFileName
-                 className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition duration-150 ease-in-out"
-               >
-                 Download Transcript (.docx)
-               </button>
-               
-               {(geminiFileName || r2ObjectKey) && (
-                 <div>
-                   <button
-                     onClick={cleanupFiles}
-                     disabled={isProcessing}
-                     className="bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition duration-150 ease-in-out mt-2"
-                   >
-                     Clean Up Temporary Files
-                   </button>
-                   <p className="text-xs text-gray-500 mt-1">
-                     Files will be automatically cleaned up when you leave this page.
-                   </p>
-                 </div>
-               )}
+              <button
+                onClick={handleDownloadDocx}
+                disabled={isProcessing || !geminiFileName}
+                className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition duration-150 ease-in-out"
+              >
+                Download Transcript (.docx)
+              </button>
+
+              {(geminiFileName || r2ObjectKey) && (
+                <div>
+                  <button
+                    onClick={cleanupFiles}
+                    disabled={isProcessing}
+                    className="bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed transition duration-150 ease-in-out mt-2"
+                  >
+                    Clean Up Temporary Files
+                  </button>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Files are automatically removed when you leave the page.
+                  </p>
+                </div>
+              )}
             </div>
           </div>
         )}
 
         <footer className="mt-8 text-center text-sm text-gray-500">
-          Powered by Google Gemini & Next.js
+          Powered by Google Gemini & Next.js
         </footer>
       </div>
     </main>
