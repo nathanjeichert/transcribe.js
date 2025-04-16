@@ -51,7 +51,7 @@ export default function Home() {
   const [audioDuration, setAudioDuration] = useState<string | null>(null);
 
   /* ----------  HELPERS  ---------- */
-  const apiBase = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  const apiBase = process.env.NEXT_PUBLIC_API_URL || "https://transcribe-j8m7xqegc-nathaniel-eicherts-projects.vercel.app";
 
   /* ----------  EVENT HANDLERS  ---------- */
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
