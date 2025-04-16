@@ -34,7 +34,7 @@ export default function Home() {
   const [geminiFileName, setGeminiFileName] = useState<string | null>(null); // To store the Gemini file name for cleanup/docx
   const [audioDuration, setAudioDuration] = useState<string | null>(null); // To store calculated duration
   const [ffmpegLoaded, setFfmpegLoaded] = useState(false);
-  const ffmpegRef = useRef<any>(null); // Initialize with null, type will be FFmpeg instance later
+  const ffmpegRef = useRef<import('@ffmpeg/ffmpeg').FFmpeg | null>(null); // Use imported type or null
   const messageRef = useRef<HTMLParagraphElement | null>(null); // For FFmpeg logs
 
   // --- FFmpeg Setup ---
