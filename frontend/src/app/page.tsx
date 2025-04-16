@@ -66,14 +66,6 @@ export default function Home() {
     loadFFmpeg();
   }, []); // Load FFmpeg only once on component mount
 
-  // --- Helper Functions ---
-  const formatDuration = (seconds: number): string => {
-    const hours = Math.floor(seconds / 3600);
-    const minutes = Math.floor((seconds % 3600) / 60);
-    const secs = Math.floor(seconds % 60);
-    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-  };
-
   // --- Event Handlers ---
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -160,7 +152,7 @@ export default function Home() {
         // Need to write the *original* file again for ffprobe if it was deleted or overwritten
         // Or better: write original file first, run ffprobe, then run conversion
         await ffmpeg.writeFile(inputFileName, await fetchFile(file)); // Ensure input file exists for ffprobe
-        let duration = 0;
+        // let duration = 0; // Removed unused variable
         try {
             // Use ffprobe to get duration. '-show_entries format=duration' gets duration.
             // '-of default=noprint_wrappers=1:nokey=1' formats output to just the number.
@@ -189,7 +181,7 @@ export default function Home() {
          if (ffmpegLoaded) {
             const inputFileName = `input.${file.name.split('.').pop() || 'mp3'}`;
             await ffmpeg.writeFile(inputFileName, await fetchFile(file));
-            let duration = 0; // Keep duration calculation logic, but exec call changes
+            // let duration = 0; // Removed unused variable
             try {
                  // Note: Capturing specific stdout here is tricky with current exec signature.
                  await ffmpeg.exec(['-i', inputFileName, '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', '-v', 'error', '-sexagesimal']);
@@ -248,9 +240,11 @@ export default function Home() {
       setStatusMessage("Transcription complete!");
       console.log("Transcription successful:", result);
 
-    } catch (err: any) {
+    } catch (err: unknown) { // Changed 'any' to 'unknown'
       console.error("Error during submission:", err);
-      setError(err.message || "An unexpected error occurred.");
+      // Type check for error message
+      const errorMessage = err instanceof Error ? err.message : "An unexpected error occurred.";
+      setError(errorMessage);
       setStatusMessage(''); // Clear status on error
     } finally {
       setIsProcessing(false);
@@ -320,9 +314,11 @@ export default function Home() {
 
       setStatusMessage("DOCX downloaded successfully.");
 
-    } catch (err: any) {
+    } catch (err: unknown) { // Changed 'any' to 'unknown'
         console.error("Error downloading DOCX:", err);
-        setError(err.message || "Failed to download DOCX.");
+         // Type check for error message
+        const errorMessage = err instanceof Error ? err.message : "Failed to download DOCX.";
+        setError(errorMessage);
         setStatusMessage('');
     } finally {
         setIsProcessing(false); // Stop indicating activity
