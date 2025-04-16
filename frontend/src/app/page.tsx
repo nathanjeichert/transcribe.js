@@ -122,9 +122,9 @@ export default function Home() {
     setGeminiFileName(null);
     setAudioDuration(null);
 
-    let audioBlob: Blob | null = null;
-    let calculatedDuration: string | null = null;
+    let audioBlob: Blob | null = null; // Needs to be let as it's assigned in conditional blocks
     const ffmpeg = ffmpegRef.current;
+    // let calculatedDuration: string | null = null; // Removed unused variable
 
     try {
       // 1. Handle File Input & Conversion (if necessary)
@@ -204,7 +204,8 @@ export default function Home() {
         throw new Error("Audio processing failed.");
       }
 
-      setAudioDuration(calculatedDuration); // Set duration state
+      // setAudioDuration(calculatedDuration); // Removed state update for unused variable
+      setAudioDuration(null); // Explicitly set to null as calculation is disabled
 
       // 2. Prepare FormData
       setStatusMessage("Preparing data for upload...");
